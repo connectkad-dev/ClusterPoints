@@ -545,11 +545,11 @@ class doCluster(GeoAlgorithm):
                 il = tuple(sorted([ik,lk],reverse=True))
                 distances[(lk,currentclustid)] = alpha_i*distances[il]+alpha_j*distances[jl]+gamma*abs(distances[il]-distances[jl])
                 
-        keys.append(currentclustid)
+            keys.append(currentclustid)
 
-        # cluster ids that weren't in the original set are negative
-        progress.setPercentage(int(90*currentclustid/(k-numPoints)))
-        currentclustid-=1
+            # cluster ids that weren't in the original set are negative
+            progress.setPercentage(int(90*currentclustid/(k-numPoints)))
+            currentclustid-=1
 
         progress.setInfo("Cluster tree computed")
  
