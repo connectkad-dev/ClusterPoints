@@ -40,7 +40,7 @@ from processing.core.parameters import (ParameterVector,
 
 from PyQt4.QtCore import QVariant
 from qgis.core import QGis, QgsFeature, QgsField, QgsPoint, QgsDistanceArea 
-from math import sqrt,fsum
+from math import fsum
 from sys import float_info
 from processing.core.GeoAlgorithmExecutionException import *
 
@@ -112,6 +112,8 @@ class doCluster(GeoAlgorithm):
         Linkage = self.getParameterValue(self.Linkage)
         Distance_Type = self.getParameterValue(self.Distance_Type)
         NumberOfClusters = self.getParameterValue(self.NumberOfClusters)
+
+        random.seed(RandomSeed)
 
         vlayer = getObject(Points)
         provider = vlayer.dataProvider()
@@ -315,7 +317,6 @@ class doCluster(GeoAlgorithm):
             # compute new distances according to the Lance-Williams algorithm
             for l in range(len(keys)):
                 lk = keys[l]
-                lclust = clust[lk]
                 alpha_i = float(iclust.size)/size
                 alpha_j = float(jclust.size)/size
                 jl = tuple(sorted([jk,lk],reverse=True))
@@ -537,7 +538,6 @@ class doCluster(GeoAlgorithm):
             # compute new distances according to the Lance-Williams algorithm
             for l in range(len(keys)):
                 lk = keys[l]
-                lclust = clust[lk]
                 alpha_i = 0.5
                 alpha_j = 0.5
                 gamma = 0.5
