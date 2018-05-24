@@ -208,7 +208,7 @@ class ClusterPointsAlgorithm(QgsProcessingAlgorithm):
         # retrieve input features
         infeat = QgsFeature()
         if SelectedFeaturesOnly:
-            fit = vlayer.selectedFeaturesIterator()
+            fit = vlayer.getSelectedFeatures()
         else:
             fit = provider.getFeatures()
 
@@ -263,7 +263,7 @@ class ClusterPointsAlgorithm(QgsProcessingAlgorithm):
 
         # assign the output points to the clusters
         if SelectedFeaturesOnly:
-            fit = vlayer.selectedFeaturesIterator()
+            fit = vlayer.getSelectedFeatures()
         else:
             fit = provider.getFeatures()
         key = 0
