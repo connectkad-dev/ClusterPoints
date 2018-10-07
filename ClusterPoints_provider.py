@@ -39,9 +39,6 @@ class ClusterPointsProvider(QgsProcessingProvider):
     def __init__(self):
         QgsProcessingProvider.__init__(self)
 
-        # Load algorithms
-        self.alglist = [ClusterPointsAlgorithm()]
-
     def unload(self):
         """
         Unloads the provider. Any tear-down steps required by the provider
@@ -53,7 +50,7 @@ class ClusterPointsProvider(QgsProcessingProvider):
         """
         Loads all algorithms belonging to this provider.
         """
-        for alg in self.alglist:
+        for alg in [ClusterPointsAlgorithm()]:
             self.addAlgorithm( alg )
 
     def id(self):
