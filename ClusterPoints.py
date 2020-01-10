@@ -23,8 +23,8 @@
 """
 
 __author__ = 'Johannes Jenkner'
-__date__ = '2018-04-04'
-__copyright__ = '(C) 2018 by Johannes Jenkner'
+__date__ = '2019-12-30'
+__copyright__ = '(C) 2019 by Johannes Jenkner'
 
 # This will get replaced with a git SHA1 when you do a git archive
 
@@ -38,7 +38,7 @@ from qgis.core import QgsProcessingAlgorithm, QgsApplication
 from qgis.core import QgsProcessingProvider
 
 from PyQt5.QtCore import QCoreApplication,QVariant
-from qgis.core import (QgsProcessing,QgsProcessingAlgorithm,
+from qgis.core import (QgsProcessing,QgsProcessingException,QgsProcessingAlgorithm,
                                                 QgsFeature,QgsField,QgsPointXY,QgsDistanceArea,
                                                 QgsProcessingParameterVectorLayer,
                                                 QgsProcessingParameterBoolean,
@@ -74,6 +74,9 @@ class ClusterPointsProvider(QgsProcessingProvider):
     def __init__(self):
         QgsProcessingProvider.__init__(self)
 
+        # Load algorithms
+        self.alglist = [ClusterPointsAlgorithm()]
+
     def unload(self):
         """
         Unloads the provider. Any tear-down steps required by the provider
@@ -85,7 +88,7 @@ class ClusterPointsProvider(QgsProcessingProvider):
         """
         Loads all algorithms belonging to this provider.
         """
-        for alg in [ClusterPointsAlgorithm()]:
+        for alg in self.alglist:
             self.addAlgorithm( alg )
 
     def id(self):
@@ -169,7 +172,7 @@ class ClusterPointsAlgorithm(QgsProcessingAlgorithm):
         self.addParameter(QgsProcessingParameterEnum(
             self.Linkage,
             self.tr("Link functions for Hierarchical algorithm"),
-            ['Ward\'s','Single','Complete','Average']))
+            ['Ward\'s','Single','Complete','Average'],optional=True))
         
         self.addParameter(QgsProcessingParameterEnum(
             self.Distance_Type,
@@ -195,7 +198,7 @@ class ClusterPointsAlgorithm(QgsProcessingAlgorithm):
 
         provider = vlayer.dataProvider()
         if provider.featureCount()<NumberOfClusters:
-            raise GeoAlgorithmExecutionException("Error initializing cluster analysis:\nToo little features available")
+            raise QgsProcessingException("Error initializing cluster analysis:\nToo little features available")
         sRs = provider.crs()
 
         d = QgsDistanceArea()
@@ -203,35 +206,32 @@ class ClusterPointsAlgorithm(QgsProcessingAlgorithm):
         d.setEllipsoid(context.project().ellipsoid())
 
         # retrieve input features
-        infeat = QgsFeature()
         if SelectedFeaturesOnly:
             fit = vlayer.getSelectedFeatures()
         else:
-            fit = provider.getFeatures()
+            fit = vlayer.getFeatures()
 
         # initialize points for clustering
         points = {}
         key = 0
+        infeat = QgsFeature()
         while fit.nextFeature(infeat):
             points[key] = infeat.geometry().asPoint()
             key += 1
         if NumberOfClusters>key:
-            raise GeoAlgorithmExecutionException("Too little points available for %i clusters") % (NumberOfClusters)
+            raise QgsProcessingException("Too little points available for {} clusters".format(NumberOfClusters))
 
         # do the clustering
         if Cluster_Type==0:
-            if Linkage!=0:
+            if parameters['Linkage'] is not None:
                 progress.pushInfo(self.tr("Linkage not used for K-Means"))
             # K-means clustering
             clusters = self.kmeans(progress,points,NumberOfClusters,d,10*float_info.epsilon,Distance_Type==1)
-            del points
-            cluster_id = {}
-            for idx,cluster in enumerate(clusters):
-                for key in cluster.ids:
-                    cluster_id[key] = idx
         else:
             # Hierarchical clustering
-            if Linkage==0:
+            if parameters['Linkage'] is None:
+                raise QgsProcessingException("Linkage must be Ward's, Single, Complete or Average")
+            elif Linkage==0:
                 clusters = self.hcluster_wards(progress,points,NumberOfClusters,d,Distance_Type==1)
             elif Linkage==1:
                 clusters = self.hcluster_single(progress,points,NumberOfClusters,d,Distance_Type==1)
@@ -239,15 +239,15 @@ class ClusterPointsAlgorithm(QgsProcessingAlgorithm):
                 clusters = self.hcluster_complete(progress,points,NumberOfClusters,d,Distance_Type==1)
             elif Linkage==3:
                 clusters = self.hcluster_average(progress,points,NumberOfClusters,d,Distance_Type==1)
-            else:
-                raise GeoAlgorithmExecutionException("Linkage must be Ward's, Single, Complete or Average") 
-            del points
-            cluster_id = {}
-            for idx,cluster in enumerate(clusters):
-                for key in cluster:
-                    cluster_id[key] = idx
+        del points
+            
+        # assign cluster IDs
+        cluster_id = {}
+        for idx,cluster in enumerate(clusters):
+            for key in cluster:
+                cluster_id[key] = idx
 
-        # write results to input file
+        # prepare output field in input layer
         progress.pushInfo(self.tr("Writing output field Cluster_ID"))
         if not vlayer.isEditable():
             vlayer.startEditing()
@@ -258,17 +258,15 @@ class ClusterPointsAlgorithm(QgsProcessingAlgorithm):
         provider.addAttributes([QgsField("Cluster_ID",QVariant.Int)])
         vlayer.updateFields()
 
-        # assign the output points to the clusters
+        # assign clusters to input layer
         if SelectedFeaturesOnly:
             fit = vlayer.getSelectedFeatures()
         else:
-            fit = provider.getFeatures()
+            fit = vlayer.getFeatures()
         key = 0
+        id_clust = vlayer.dataProvider().fieldNameIndex("Cluster_ID")
         while fit.nextFeature(infeat):
-            atMap = infeat.attributes()
-            atMap[-1] = cluster_id[key]
-            infeat.setAttributes(atMap)
-            vlayer.updateFeature(infeat)    
+            vlayer.changeAttributeValue(infeat.id(), id_clust, cluster_id[key])
             key += 1
         vlayer.commitChanges()
         progress.setProgress(100)
@@ -352,6 +350,11 @@ class ClusterPointsAlgorithm(QgsProcessingAlgorithm):
             for i in range(k):
                 # Calculate new centroid coordinates
                 numPoints = len(setList[i])
+                if numPoints == 0:
+                    raise QgsProcessingException("Algorithm failed after "+ \
+                                                 "{} iterations: Choose a "+ \
+                                                 "different random seed or "+ \
+                                                 "a smaller number of clusters".format(loopCounter))
                 xcenter = fsum([points[p].x() for p in setList[i]])/numPoints
                 ycenter = fsum([points[p].y() for p in setList[i]])/numPoints
                 # Calculate how far the centroid moved in this iteration
@@ -364,43 +367,28 @@ class ClusterPointsAlgorithm(QgsProcessingAlgorithm):
                 progress.setProgress(90)
                 progress.pushInfo(self.tr("Converged after {} iterations").format(loopCounter))
                 break
-        return clusters
+    
+        return [c.ids for c in clusters]
 
     def hcluster_average(self, progress, points, k, d, manhattan=False):
-
-        def get_cluster_elements(clust):
-            # return ids for elements in a cluster sub-tree
-            if clust.id>=0:
-                # positive id means that this is a leaf
-                return [clust.id]
-            else:
-                # check the right and left branches
-                cl = []
-                cr = []
-                if clust.left!=None:
-                    cl = get_cluster_elements(clust.left)
-                if clust.right!=None:
-                    cr = get_cluster_elements(clust.right)
-                return cl+cr
 
         clust={}
         distances={}
         currentclustid=-1
         numPoints=len(points)
+        keys=[]
 
         # clusters are initially singletons
-        for p in list(points.keys()):
+        for p in reversed(list(points.keys())):
             clust[p] = Cluster_node(id=p,d=d)
-            
-        keys = list(clust.keys())
-        keys.sort(reverse=True)
+            keys.append(p)
         
         # compute pairwise distances
         for i in range(len(keys)):
             ik = keys[i]
             for j in range(i+1,len(keys)):
                 jk = keys[j]
-                distances[(ik,jk)]=clust[i].getDistance(points[ik],points[jk],manhattan)
+                distances[(ik,jk)]=clust[ik].getDistance(points[ik],points[jk],manhattan)
 
         while currentclustid>=k-numPoints:
             closest = float_info.max
@@ -431,10 +419,10 @@ class ClusterPointsAlgorithm(QgsProcessingAlgorithm):
             clust[currentclustid]=Cluster_node(size,left=iclust,
                                                right=jclust,id=currentclustid,d=d)
             # compute new distances according to the Lance-Williams algorithm
+            alpha_i = float(iclust.size)/size
+            alpha_j = float(jclust.size)/size
             for l in range(len(keys)):
                 lk = keys[l]
-                alpha_i = float(iclust.size)/size
-                alpha_j = float(jclust.size)/size
                 jl = tuple(sorted([jk,lk],reverse=True))
                 il = tuple(sorted([ik,lk],reverse=True))
                 distances[(lk,currentclustid)] = alpha_i*distances[il]+alpha_j*distances[jl]
@@ -447,7 +435,7 @@ class ClusterPointsAlgorithm(QgsProcessingAlgorithm):
 
         progress.pushInfo(self.tr("Cluster tree computed"))
 
-        return [get_cluster_elements(c) for c in list(clust.values())]
+        return [c.getElements(c) for c in list(clust.values())]
 
     def hcluster_single(self, progress, points, k, d, manhattan=False):
 
@@ -476,12 +464,12 @@ class ClusterPointsAlgorithm(QgsProcessingAlgorithm):
             jk = toMerge[1]
             if clusters[ik]!=clusters[jk]:
                 # retrieve indexes of cluster
-                if clusters[ik]<0:
+                if isinstance(clusters[ik],int):
                     members = clusters[clusters[ik]]
                     del clusters[clusters[ik]]
                 else:
                     members = [ik]
-                if clusters[jk]<0:
+                if isinstance(clusters[jk],int):
                     members += clusters[clusters[jk]]
                     del clusters[clusters[jk]]
                 else:
@@ -504,39 +492,23 @@ class ClusterPointsAlgorithm(QgsProcessingAlgorithm):
 
     def hcluster_wards(self, progress, points, k, d, manhattan=False):
 
-        def get_cluster_elements(clust):
-            # return ids for elements in a cluster sub-tree
-            if clust.id>=0:
-                # positive id means that this is a leaf
-                return [clust.id]
-            else:
-                # check the right and left branches
-                cl = []
-                cr = []
-                if clust.left!=None:
-                    cl = get_cluster_elements(clust.left)
-                if clust.right!=None:
-                    cr = get_cluster_elements(clust.right)
-                return cl+cr
-
         clust={}
         distances={}
         currentclustid=-1
         numPoints=len(points)
+        keys=[]
 
         # clusters are initially singletons
-        for p in list(points.keys()):
+        for p in reversed(list(points.keys())):
             clust[p] = Cluster_node(id=p,d=d)
-            
-        keys = list(clust.keys())
-        keys.sort(reverse=True)
+            keys.append(p)
         
         # compute pairwise distances
         for i in range(len(keys)):
             ik = keys[i]
             for j in range(i+1,len(keys)):
                 jk = keys[j]
-                distances[(ik,jk)]=clust[i].getDistance(points[ik],points[jk],manhattan)
+                distances[(ik,jk)]=clust[ik].getDistance(points[ik],points[jk],manhattan)
 
         while currentclustid>=k-numPoints:
             closest = float_info.max
@@ -582,36 +554,23 @@ class ClusterPointsAlgorithm(QgsProcessingAlgorithm):
             # cluster ids that weren't in the original set are negative
             progress.setProgress(int(90*currentclustid/(k-numPoints)))
             currentclustid-=1
-
+        
         progress.pushInfo(self.tr("Cluster tree computed"))
 
-        return [get_cluster_elements(c) for c in list(clust.values())]
+        return [c.getElements(c) for c in list(clust.values())]
 
     def hcluster_complete(self, progress, points, k, d, manhattan=False):
-
-        def get_cluster_elements(clust):
-            # return ids for elements in a cluster sub-tree
-            if clust.id>=0:
-                # positive id means that this is a leaf
-                return [clust.id]
-            else:
-                # check the right and left branches
-                cl = []
-                cr = []
-                if clust.left!=None:
-                    cl = get_cluster_elements(clust.left)
-                if clust.right!=None:
-                    cr = get_cluster_elements(clust.right)
-                return cl+cr
 
         clust={}
         distances={}
         currentclustid=-1
         numPoints=len(points)
+        keys=[]
 
         # clusters are initially singletons
-        for p in list(points.keys()):
+        for p in reversed(list(points.keys())):
             clust[p] = Cluster_node(id=p,d=d)
+            keys.append(p)
             
         keys = list(clust.keys())
         keys.sort(reverse=True)
@@ -621,7 +580,7 @@ class ClusterPointsAlgorithm(QgsProcessingAlgorithm):
             ik = keys[i]
             for j in range(i+1,len(keys)):
                 jk = keys[j]
-                distances[(ik,jk)]=clust[i].getDistance(points[ik],points[jk],manhattan)
+                distances[(ik,jk)]=clust[ik].getDistance(points[ik],points[jk],manhattan)
 
         while currentclustid>=k-numPoints:
             closest = float_info.max
@@ -652,11 +611,11 @@ class ClusterPointsAlgorithm(QgsProcessingAlgorithm):
             clust[currentclustid]=Cluster_node(size,left=iclust,
                                                right=jclust,id=currentclustid,d=d)
             # compute new distances according to the Lance-Williams algorithm
+            alpha_i = 0.5
+            alpha_j = 0.5
+            gamma = 0.5
             for l in range(len(keys)):
                 lk = keys[l]
-                alpha_i = 0.5
-                alpha_j = 0.5
-                gamma = 0.5
                 jl = tuple(sorted([jk,lk],reverse=True))
                 il = tuple(sorted([ik,lk],reverse=True))
                 distances[(lk,currentclustid)] = alpha_i*distances[il]+alpha_j*distances[jl]+gamma*abs(distances[il]-distances[jl])
@@ -669,7 +628,7 @@ class ClusterPointsAlgorithm(QgsProcessingAlgorithm):
 
         progress.pushInfo(self.tr("Cluster tree computed"))
  
-        return [get_cluster_elements(c) for c in list(clust.values())]
+        return [c.getElements(c) for c in list(clust.values())]
 
 
 
@@ -726,7 +685,6 @@ class Cluster_node:
     Class for hierarchical clustering
     '''
     def __init__(self, size=1, left=None, right=None, id=None, d=None):
-
         self.size = size
         self.left = left
         self.right = right
@@ -744,3 +702,12 @@ class Cluster_node:
                 self.d.measureLine(QgsPointXY(point1.x(),point2.y()),point2)
         else:
             return self.d.measureLine(point1,point2)
+
+    def getElements(self,clust):
+        '''
+        Return all positive ids within the cluster
+        '''
+        if clust.id>=0:
+            return [clust.id]
+        else:
+            return self.getElements(clust.left)+self.getElements(clust.right)
